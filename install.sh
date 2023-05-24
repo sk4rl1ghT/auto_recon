@@ -12,7 +12,7 @@ cd
 
 echo -e "${BK}                              ${RT}" | tr -d '\n' | pv -qL 4; echo -e " ${BK}INSTALLING ALL DEPENDENCIES${RT}"
 sudo apt-get update -y
-#sudo apt-get dist-upgrade -y
+sudo apt-get dist-upgrade -y
 sudo apt-get install git python3 python3-pip snapd cmake jq libpcap-dev screen build-essential clang zip unzip pv -y
 
 echo -e "- Installing go-lang"
