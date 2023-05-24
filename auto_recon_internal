@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+#@> VARIABLES
+DM=
+VR="v1"
+#PR="21,22,80,81,280,300,443,583,591,593,832,981,1010,1099,1311,2082,2087,2095,2096,2480,3000,3128,3333,4243,4444,4445,4567,4711,4712,4993,5000,5104,5108,5280,5281,5601,5800,6543,7000,7001,7002,7396,7474,8000,8001,8008,8009,8014,8042,8060,8069,8080,8081,8083,8088,8090,8091,8095,8118,8123,8172,8181,8222,8243,8280,8281,8333,8337,8443,8500,8530,8531,8834,8880,8887,8888,8983,9000,9001,9043,9060,9080,9090,9091,9092,9200,9443,9502,9800,9981,10000,10250,10443,11371,12043,12046,12443,15672,16080,17778,18091,18092,20720,28017,32000,55440,55672"
+
+#@> COLORS
+BK="\e[7m"
+RT="\e[0m"
+YW="\e[93m"
+GR="\e[32m"
+
+#@> PRINT USAGE
+PRINT_USAGE(){
+    echo -e ""
+    echo -e "${YW}
+\t\t���� ���� ���� ���� ����
+\t\t���� ���� ���� ���� ����
+\t\t���� ���� ���� ���� ����
+${RT}"
+    echo -e "A RECONNAISSANCE SUITE FOR BUG BOUNTY"
+    echo -e ""
+    echo -e "Example Usage:"
+    echo -e "auto_recon_internal [-d target.tld] "
+    echo -e ""
+    echo -e "Flags:"
+    echo -e "   -d, --domain                 ${BK}string${RT}     Add your target                         -d target.tld"
+    echo -e ""
+    echo -e "${BK}Optional Flags: ${RT}"
+    echo -e "   -v, --version                           Print current version"
+    exit 0
+}
+
+#@> ARGUMENTS
+while [ -n "$1" ]; do
+    case $1 in
+            -d|--domain)
+                DM=$2
+                shift ;;
+
+            -h|--help)
+                PRINT_USAGE
+                shift ;;
+
+            -v|--version)
+                echo -e "$VR"
+                exit 0 ;;
+
+            *)
+                PRINT_USAGE
+    esac
+    shift
+done
+
+
+
+
+
+#@> EXIT FUNCTION
+trap ctrl_c INT
+ctrl_c(){
+    echo -e ""
+    echo -e "${YW} [!] ${RT} KEYBOARD INTERRUPTION, ${GR}EXITING ${RT}..."
+    exit 127
+}
+
+#@> BANNER
+INFOM(){
+    clear
+    echo -e ""
+    echo -e "${YW}
+\t\t���� ���� ���� ���� ����
+\t\t���� ���� ���� ���� ����
+\t\t���� ���� ���� ���� ����
+${RT}"
+    echo -e "A RECONNAISSANCE SUITE FOR BUG BOUNTY"
+    OT=$(echo -e "$(echo $DM | sed -e 's/\.[a-z]*$//')_$(date +"%Y_%M_%d-%H_%M_%S")")
+    echo $OT
+    mkdir -p $OT 2> /dev/null
+    cd $OT
+    echo -e ""
+    echo -e "${BK}DOMAIN> ${RT}" | tr -d "\n"; echo -e " $DM" | pv -qL 6
+    echo -e "${BK}OUTPUT> ${RT}" | tr -d "\n"; echo -e " $(pwd | sed 's/\// < /g' | cut -c 4-)" | pv -qL 6
+    echo -e "Scanning started on $DM at $(date)" | notify -silent
+}
+
+#@> MAKE FOLDERS
+MAKDR(){
+    mkdir -p .tmp
+    mkdir -p database
+    mkdir -p database/.gf
+    mkdir -p vulns
+}
+
+
+#@> SUBDOMAIN ENUMERATION
+SUBD_SCAN(){
+    echo -e ""
+    echo -e "${BK}        ${RT}" | tr -d '\n' | pv -qL 4; echo -e " STARTING SUBDOMAIN SCANNING ON ${BK}$DM${RT} (${YW}it may take time${RT})"
+    echo $DM > database/lives.txt
+    echo -e "Subdomain enumeration completed, total [Subdomains:1  Activeurls:$(cat database/lives.txt | wc -l)] found"
+}
+JS_ENUM(){
+    echo -e "${BK}        ${RT}" | tr -d '\n' | pv -qL 6; echo -e " STARTING ENUM JS FILES ${BK}$DM${RT} (${YW}it may take time${RT})"
+
+    #Gathering JsFiles
+    cat database/urls.txt | grep '\.js$\|\.jsp$' | grep -ivE '\.json' | grep -ivE 'jquery' | grep -ivE 'bootstrap' | sort -u | anew -q .tmp/js_links.txt
+    cat database/urls.txt | uro | subjs >> .tmp/js_links.txt
+
+    #Check Live JS links
+    cat .tmp/js_links.txt | grep -v "/lib/" | grep $DM | httpx -follow-redirects -silent -status-code | grep "[200]" | cut -d ' ' -f1 | sort -u | anew -q database/js_livelinks.txt
+    
+    #Gather Endpoints From JsFiles
+    xargs -a database/js_livelinks.txt -P 50 -I % bash -c "python3 ~/tools/LinkFinder/linkfinder.py -o cli -i '%'" >> database/js_endpoints.txt
+    
+    #Get Endpoints Form Burpsuite files 
+    #python3 ~/tools/LinkFinder/linkfinder.py -i /home/$USER/burpjs.txt -o cli >> database/js_endpoints.txt
+    
+    #Run Collecter - This tool will auto extract File, Variable, Path... form  JS_endpoint
+    cat database/js_endpoints.txt | sort -u | python3 ~/tools/collector.py vulns/js_analyst
+
+    #Gather Secret to discover sensitive data like apikeys, accesstoken, authorizations, jwt,..etc in js file
+    xargs -a database/js_livelinks.txt -P 50 -I % bash -c "python3 ~/tools/SecretFinder/SecretFinder.py -o cli -i '%'" >> vulns/js_analyst/secret.txt
+}
+#@> WEB CRAWLING AND FILTERING
+WEBC_RAWL(){
+    echo -e "${BK}        ${RT}" | tr -d '\n' | pv -qL 6; echo -e " STARTING WEBCRAWLING ON ${BK}$DM${RT} (${YW}it may take time${RT})"
+    # GET FILE AFTER SCAN VIA BURPSUITE
+    cat ~/burp_output/all_url.txt | sed '/\[/d' | grep $DM | sort -u | anew database/urls.txt &> /dev/null
+    cat reports/fuzz_dir.txt | grep 200 | awk '{print $3}' >> database/urls.txt &> /dev/null
+    
+    JS_ENUM
+
+    #@> FILTERING ENDPOINTS USING PATTERNS
+    if [ -s "database/urls.txt" ]; then
+        #grep url contains parameter
+        cat database/urls.txt |  sed "s/'\|(\|)//g" | uro | grep "=" | httpx -mc 200 -silent | sort -u | anew -q database/.gf/all_param.list
+        
+        #gộp content wordlist từ file params của paramnier và file params.txt thu được từ JSENUM tạo thành 1 file worldlist mới
+        cat ~/wordlists/params vulns/js_analyst/params.txt >> database/wordlist_all_params.txt
+
+        #check hidden param với file worldlist mới
+        arjun -i database/.gf/all_param.list -w database/wordlist_all_params.txt -q -oT database/.gf/arjun_param.list &> /dev/null
+
+        #có kết quả của bước check hidden param với file wordlist mới thì sẽ append kết quả đó vào file param mặc định ban đầu
+        #VD: ban đầu file database/.gf/all_param.list có url là example.com/?test=a. 
+        #    Sau khi check hiddenparam, phát hiện param ẩn là examplecom?test=a&hidden=a
+        #    Append kết quả sau khi check hidden param vào 1 file
+        cat database/.gf/arjun_param.list | uro | anew database/.gf/all_param.list &> /dev/null
+	
+	#filter commond param's xss  and check reflected 
+        gf xss database/.gf/all_param.list | sed "s/'\|(\|)//g" | Gxss| httpx -mc 200 -silent | sort -u | anew -q database/.gf/xss.list 
+
+        #scan what charactor we can inject
+	cat database/.gf/xss.list 2> /dev/null | kxss 2> /dev/null  | grep -v "Unfiltered: \[\]" | grep "<>\|\"\|\'" | awk '{print $2}' | sort -u | anew -q .tmp/xssparam_reflect.list /dev/null
+	
+	#scan with basic xss payload
+        cat .tmp/xssparam_reflect.list 2> /dev/null | bhedak "\'\">/><svg/onload=confirm(document.domain)>" 2> /dev/null | httpx -mc 200 -silent | sort -u | anew -q .tmp/xss_payload.txt
+    else
+        echo -e "[!] - \"database/urls.txt\" file not found or doesn't contain anything"
+        exit 127
+    fi
+}
+
+#@> NUCLEI SCAN
+NUCL_SCAN(){
+    echo -e "${BK}        ${RT}" | tr -d '\n' | pv -qL 6; echo -e " STARTING NUCLEI VULNERABILITY SCANNING ON ${BK}$DM${RT} (${YW}it may take time${RT})"
+    nuclei -update-templates 2> /dev/null &> /dev/null
+    xargs -a database/lives.txt -P 50 -I % bash -c "nuclei -target % -silent" 2> /dev/null | anew vulns/nuclei.txt # | notify -silent &> /dev/null
+}
+
+#@> VULNERABILITY SCANNING
+VULN_SCAN(){
+    echo -e "${BK}        ${RT}" | tr -d '\n' | pv -qL 6; echo -e " STARTING INJECTION VULNERABILITY SCANNING ON ${BK}$DM${RT} (${YW}it may take time${RT})"
+    cat database/urls.txt | cut -d"?" -f1 | cut -d"=" -f1 | grep -iaE "([^.]+)\.zip$|([^.]+)\.zip\.[0-9]+$|([^.]+)\.zip[0-9]+$|([^.]+)\.zip[a-z][A-Z][0-9]+$|([^.]+)\.zip\.[a-z][A-Z][0-9]+$|([^.]+)\.rar$|([^.]+)\.tar$|([^.]+)\.tar\.gz$|([^.]+)\.tgz$|([^.]+)\.sql$|([^.]+)\.db$|([^.]+)\.sqlite$|([^.]+)\.pgsql\.txt$|([^.]+)\.mysql\.txt$|([^.]+)\.gz$|([^.]+)\.config$|([^.]+)\.log$|([^.]+)\.bak$|([^.]+)\.backup$|([^.]+)\.bkp$|([^.]+)\.crt$|([^.]+)\.dat$|([^.]+)\.eml$|([^.]+)\.java$|([^.]+)\.lst$|([^.]+)\.key$|([^.]+)\.passwd$|([^.]+)\.pl$|([^.]+)\.pwd$|([^.]+)\.mysql-connect$|([^.]+)\.jar$|([^.]+)\.cfg$|([^.]+)\.dir$|([^.]+)\.orig$|([^.]+)\.bz2$|([^.]+)\.old$|([^.]+)\.vbs$|([^.]+)\.img$|([^.]+)\.inf$|([^.]+)\.sh$|([^.]+)\.py$|([^.]+)\.vbproj$|([^.]+)\.mysql-pconnect$|([^.]+)\.war$|([^.]+)\.go$|([^.]+)\.psql$|([^.]+)\.sql\.gz$|([^.]+)\.vb$|([^.]+)\.webinfo$|([^.]+)\.jnlp$|([^.]+)\.cgi$|([^.]+)\.tmp$|([^.]+)\.ini$|([^.]+)\.webproj$|([^.]+)\.xsql$|([^.]+)\.raw$|([^.]+)\.inc$|([^.]+)\.lck$|([^.]+)\.nz$|([^.]+)\.rc$|([^.]+)\.html\.gz$|([^.]+)\.gz$|([^.]+)\.env$|([^.]+)\.yml$" | httpx -silent -follow-host-redirects | anew -q vulns/files.txt &> /dev/null
+    #scan basic xss
+    xargs -a .tmp/xss_payload.txt -P 50 -I % bash -c "curl -s -L -H \"X-Bugbounty: Testing\" -H \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.77 Safari/537.36\" --insecure '%' | grep \"<svg/onload=confirm(document.domain)>\" && echo -e \"[POTENTIAL XSS] - % \n \"" 2> /dev/null | grep "POTENTIAL XSS" | anew vulns/xss.txt &> /dev/null
+}
+
+#@> DIRECTORY FUZZING
+FUZZ_DIRS(){
+    echo -e "${BK}        ${RT}" | tr -d '\n' | pv -qL 6; echo -e " STARTING DIRECTORY FUZZING ON ${BK}$DM${RT} (${YW}it may take time${RT})"
+    python3 ~/tools/dirsearch/dirsearch.py -u "$DM" -o reports/fuzz_dir.txt --exclude-sizes=0B  &> /dev/null
+}
+
+
+#@> SENDING FINAL NOTIFICATION
+SEND_NOTE(){
+    echo -e ""
+    echo -e "${BK} SCANNING COMPLETED SUCCESSFULLY ON $DM ${RT}"
+    echo -e "Scanning completed on $DM at $(date)" | notify -silent
+}
+
+START(){
+    SUBD_SCAN 2> /dev/null
+    FUZZ_DIRS 2> /dev/null
+    WEBC_RAWL 2> /dev/null
+    NUCL_SCAN 2> /dev/null
+    VULN_SCAN 2> /dev/null
+    SEND_NOTE 2> /dev/null
+}
+
+while true
+do
+    INFOM
+    MAKDR
+    START
+    exit 0
+done
